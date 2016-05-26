@@ -4,6 +4,23 @@ import numpy as np
 FNULL = open(os.devnull, "w")
 
 """
+Given a sorted list,
+find the first index where value > threshold
+if it does not exist (threshold > all values), return -1
+"""
+def first_index_geq(elements, reference):
+	for index, elem in enumerate(elements):
+		if elem > reference:
+			return index
+	return -1
+
+def get_other(prot):
+	if prot == "tcp":
+		return "udp"
+	return "tcp"
+	
+
+"""
 Conversion es. "45.5m"--> 45500000
 Conversion es. "45m"  --> 45000000	
 The rate can contain an integer.

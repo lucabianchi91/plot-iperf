@@ -30,13 +30,17 @@ DEATH_TOLERANCE = 2 * IPERF_REPORT_INTERVAL
 
 T = IPERF_REPORT_INTERVAL * 0.8 # reports in [t-T,t+T] are burned
 
-# The graph keeps expanding until MAX_TIME_WINDOW [seconds], then data and graph are reset
+"""
+The graph keeps expanding until MAX_TIME_WINDOW [seconds], 
+then data and graph are reset and the plot begins to slide
+"""
 MAX_TIME_WINDOW = 60 
+
 SMOOTH_WINDOW = 10 # number of samples to be smoothed
 DENSITY_LINSPACE = 4 # resampling frequency
 BITRATE_MIN = 10*10**3 # min 10kb/s or it's just noise
 
-
+#------------------ MATPLOTLIB FUNCTIONS ---------------------------
 def stop_server():
 	print "Stopping the server..."
 	stop.set()
@@ -46,15 +50,43 @@ Print the plot legend
 """
 def print_legend(subplot, num_flows):
 	if num_flows==1:
-		title = "1 user"
+		title = "1 active user"
 	else:
-		title = "{} users".format(num_flows)
+		title = "{} active users".format(num_flows)
 
-	subplot.legend(
+	legend = subplot.legend(
 		bbox_to_anchor=(1.03, 1), 
 		loc=2,
 		borderaxespad=0.,
 		title=title)
+
+
+"""
+Check if the number of active users is the expected value.
+In not, stop the server
+"""
+def check_number_of_users(data, expected_users):
+	if count_users(data) != expected_users:
+		print "Less users than expected, aborting..."
+		stop_server()
+
+
+# Count the number of active flows
+def count_users(data):
+	num = 0
+	clients_id = []
+	with sem_data:
+		now = time.time()-t0
+		for src in data:
+			if src != "SUM":
+				for key in data[src]:
+					if (len(data[src][key]["t"]) > 0 and 
+						abs(now - data[src][key]["t"][-1]) <= DEATH_TOLERANCE and 
+						data[src][key]["val"][-1] > 0):
+						clients_id.append(src)
+						break
+		num = len(clients_id)
+	return num
 
 """
 Returns a smoothed list
@@ -81,80 +113,14 @@ def smooth(list_x, smooth_window):
 		return sm[:len_x]
 
 
-#------------------------ PARSING --------------------------------
-
-"""
-Return true if the TCP line is valid, false otherwise
-Example:
-20160525170508,192.168.1.77,0,192.168.1.52,0,-1,9.0-10.0,1455352,11642816
-"""
-def is_valid_iperf_tcp_line(cols, report_interval):
-
-	# Valid length
-	if len(cols) != 9:
-		return False
-
-	# Is a summation line?
-	if (cols[2], cols[4], cols[5][0]) != ("0","0", "-"):
-		return False
-
-	# Is a valid report interval? 
-	# There are also end of transmission reports...
-	intvs = cols[6].split("-")
-	intv0 = float(intvs[0])
-	intv1 = float(intvs[1])
-	if intv1 - intv0 != float(report_interval):
-		return False
-
-	return True
-
-"""
-Return true if the UDP line is valid, false otherwise
-Example
-0              1             2    3             4     5    6      7      8       9     10 11  12    13
-20150803222713,192.168.100.4,5002,192.168.100.2,36823,3, 5.0-6.0, 24990, 199920, 0.011,0, 17, 0.000,0
-20160525171330,192.168.1.77, 5001,192.168.1.52, 57997,5,20.0-21.0,130830,1046640,1.945,0, 89, 0.000,0
-20160525183306,192.168.1.77, 5001,192.168.1.52, 54274,5,21.0-22.0,0,     0,      0.000,0, 0,  -nan, 0
-
-"""
-def is_valid_iperf_udp_line(cols, report_interval):
-	
-	# Valid length
-	if len(cols) != 14 or int(cols[13]) != 0:
-		return False
-
-	# NaN lines
-	if cols[12] == "-nan":
-		return False
-
-
-	# Is a valid report interval? 
-	intvs = cols[6].split("-")
-	intv0 = float(intvs[0])
-	intv1 = float(intvs[1])
-	if intv1 - intv0 != float(report_interval):
-		return False
-	return True
-
 #------------------------------ SUM OF FLOWS -------------------------------------#
-
-"""
-Find the first index where time >= t
-data is a time list
-if it does not exist, return -1
-"""
-def first_index_geq(elements, reference):
-	for index, elem in enumerate(elements):
-		if elem > reference:
-			return index
-	return -1
 
 """
 Given a user's timesample, 
 find if its TCP or UDP and in which position it is
 data is data[uid]
 """
-def find_timestamp(data,t):
+def index_of_timestamp(data, t):
 	prot = "tcp"
 	index = -1
 	try:
@@ -169,9 +135,9 @@ def find_timestamp(data,t):
 Delete samples around t and insert the new sample in the right position
 data is data[uid][prot]
 """
-def fire(data,t):
-	begin = first_index_geq(data["t"],t-T) 
-	end = first_index_geq(data["t"],t+T)
+def delete_data_around_t(data, t):
+	begin = first_index_geq(data["t"], t-T) 
+	end = first_index_geq(data["t"], t+T)
 	if end - begin > 0:
 		del(data["t"][begin:end])
 		del(data["val"][begin:end])
@@ -180,7 +146,7 @@ def fire(data,t):
 insert t,val in the correct position of data
 data is data[uid][protocol]
 """
-def insert_value(data,t,val):
+def insert_sample(data,t,val):
 	index = first_index_geq(data["t"],t)
 	if index == -1:
 		data["t"].append(t)
@@ -190,26 +156,31 @@ def insert_value(data,t,val):
 		data["val"].insert(index,val)
 
 
-def get_other(prot):
-	if prot == "tcp":
-		return "udp"
-	return "tcp"
-
 """
 Given 2 points A,B that defines the rect y
 return the value of y(t)
+"""
+def interpolate_val(x1, y1, x2, y2, t):
+	x_coords = (x1,x2)
+	y_coords = (y1,y2)
+	A = vstack([x_coords,ones(len(x_coords))]).T
+	m, c = lstsq(A, y_coords)[0]
+	return ( m * t ) + c
+
+
+"""
 return -1 if a line cannot be traced
 data is data[uid][prot]
 """
-def interpolated_val(data,t):
-	i = first_index_geq(data["t"],t)
-	if i > 0:
-		x_coords = (data["t"][i-1],data["t"][i])
-		y_coords = (data["val"][i-1],data["val"][i])
-		A = vstack([x_coords,ones(len(x_coords))]).T
-		m, c = lstsq(A, y_coords)[0]
-		return (m*t)+c
-	return -1
+def get_interpolated_val(data, t):
+	i = first_index_geq(data["t"], t)
+	if i <= 0:
+		return -1
+	x1 = data["t"][i-1]
+	x2 = data["t"][i]
+	y1 = data["val"][i-1]
+	y2 = data["val"][i]
+	return interpolate_val(x1, y1, x2, y2, t)
 
 """
 Append a zero sample if the last received sample is too far 
@@ -217,13 +188,10 @@ Append a zero sample if the last received sample is too far
 Return True if a dead is declared, False otherwise
 Data is data[uid][prot]
 
-
 iPerf TCP behavior:
 produce reports only for received packets 
 ==> check timestamps
 ==> after a certain time with no reports--> dead
-
-
 
 iPerf UDP behavior:
 At the begin it produces no output.
@@ -235,7 +203,7 @@ When a user stop to send data, begin to produce NAN regularly:
 def update_death_flows(data, t):
 	if len(data["t"]) > 0:
 		last_t = data["t"][-1]
-		if t - last_t >= DEATH_TOLERANCE:
+		if abs(t - last_t) >= DEATH_TOLERANCE:
 			data["t"].append(last_t + IPERF_REPORT_INTERVAL)
 			data["val"].append(0)
 			return True
@@ -262,39 +230,42 @@ def declare_as_singles(data, t1, t2, singles):
 """
 Delete old singles and order the list
 """
-def update_singles(singles):
+def delete_old_singles(singles):
 	# list(set()) eliminate duplicates
 	s = sorted(list(set(singles)))
 	last_t = s[-1]
 	first_valid = first_index_geq(s, last_t - MAX_TIME_WINDOW)
 	if first_valid>0:
-		# print "delete old singles {},".format(len(singles)),
 		del s[:first_valid]
-		# print len(singles)
 	return s
 
 """
 Solve the list of singles
+A single is a timestamp corresponding to 
+a total executed with only a protocol
 data is data[uid]
 """
 def solve_singles(data, singles):
 	solved_singles = []
 	for single in singles:
-		prot, index = find_timestamp(data,single)
-		val1 = data[prot]["val"][index]
-		val2 = interpolated_val(data[get_other(prot)],single)
+		prot, index = index_of_timestamp(data, single)
+		other_val = get_interpolated_val(data[get_other(prot)],single)
+		
+		if other_val <= 0 or index < 0:
+			continue
 
+		current_val = data[prot]["val"][index]
+		
 		# Index of the single in "total"
-		index_in_total = data["total"]["t"].index(single)
-		if index >= 0:
-			"""
-			I the sum was done using only tcp, add upd
-			and viceversa
-			"""
-			data["total"]["val"][index_in_total] = val1 + val2
+		index_in_total = data["total"]["t"].index(single)	
+		
+		"""
+		I the sum was done using only tcp, add upd
+		and viceversa
+		"""
+		data["total"]["val"][index_in_total] = current_val + other_val
 
-			if val2>0:
-				solved_singles.append(single)
+		solved_singles.append(single)
 
 	# Update the list of singles deleting solved ones
 	s = list(singles)
@@ -303,27 +274,30 @@ def solve_singles(data, singles):
 	return s
 
 
-def update_sum(data,t,val,uid,prot,singles):
-	# print "Begin with {}".format(data[prot]["t"])
+def update_sum(data, t, val, uid, prot, singles):
+
 	other = get_other(prot)
+	
 	# delete samples around t because they are fake 
-	fire(data[prot],t)  
-	# insert the new poit
-	insert_value(data[prot],t,val)
+	delete_data_around_t(data[prot],t)  
+	
+	# insert the new sample in data
+	insert_sample(data[prot], t, val)
+
 	#add the new point in total
-	insert_value(data["total"],t,val)
+	insert_sample(data["total"], t, val)
+
 	# declare as singles all totals in the burned interval
-	# print "---------------------------"
-	# print "Start update with {} singles".format(len(singles))
-	declare_as_singles(data["total"]["t"],t-T,t+T,singles)
-	# print "After singles in fire, {}".format(len(singles))
-	# see if the other flow is dead and declare it
-	if update_death_flows(data[other],t):
+	declare_as_singles(data["total"]["t"], t-T, t+T, singles)
+
+	# see if the other flow (same IP address, other protocol) is dead and declare it
+	#if update_death_flows(data[other], t):
 		# if something changed, declare these points as singles
-		declare_as_singles(data["total"]["t"],data[other]["t"][-2],data[other]["t"][-1],singles)
+	#	declare_as_singles(data["total"]["t"], data[other]["t"][-2], data[other]["t"][-1], singles)
+
 	# update singles: sort and delete samples too old
-	singles = update_singles(singles)
-	# print "After update, {}".format(len(singles))
+	singles = delete_old_singles(singles)
+
 	# try to solve all singles
 	singles = solve_singles(data,singles)
 	# print "After solution, {}".format(len(singles))
@@ -332,33 +306,6 @@ def update_sum(data,t,val,uid,prot,singles):
 	#print "End with {}".format(data[prot]["t"])
 	
 #-------------------------- DATA MANAGEMENT -------------------------------
-
-"""
-Check if the number of active users is the expected value.
-In not, stop the server
-"""
-def check_number_of_users(data, expected_users):
-	if update_alive_flows(data) != expected_users:
-		print "Less users than expected, aborting..."
-		stop_server()
-
-
-# Count the number of active flows
-def update_alive_flows(data):
-	num = 0
-	clients_id = []
-	with sem_data:
-		now = time.time()-t0
-		for src in data:
-			if src != "SUM":
-				for key in data[src]:
-					if (len(data[src][key]["t"]) > 0 and 
-						abs(now - data[src][key]["t"][-1]) <= DEATH_TOLERANCE and 
-						data[src][key]["val"][-1] > 0):
-						clients_id.append(src)
-						break
-		num = len(clients_id)
-	return num
 
 # initialize the data structure
 # data = {
@@ -381,8 +328,30 @@ def new_client_data():
 	}
 	return data
 
-
 #------------------------------ THREADS -------------------------------------#
+"""
+Return true if the TCP line is valid, false otherwise
+Example:
+20160525170508,192.168.1.77,0,192.168.1.52,0,-1,9.0-10.0,1455352,11642816
+"""
+def is_valid_iperf_tcp_line(cols, report_interval):
+
+	# Valid length
+	if len(cols) != 9:
+		return False
+
+	# Is a summation line?
+	if (cols[2], cols[4], cols[5][0]) != ("0","0", "-"):
+		return False
+
+	# Is a valid report interval? 
+	# There are also end of transmission reports...
+	intvs = cols[6].split("-")
+	intv0 = float(intvs[0])
+	intv1 = float(intvs[1])
+	if intv1 - intv0 != float(report_interval):
+		return False
+	return True
 
 def iperf_tcp_thread(data, port,singles):
 	print "\niPerf TCP server listening on port {}".format(port)
@@ -440,6 +409,33 @@ def iperf_tcp_thread(data, port,singles):
 
 	print "iPerf TCP server (port {}) terminated".format(port)
 
+"""
+Return true if the UDP line is valid, false otherwise
+Example
+0              1             2    3             4     5    6      7      8       9     10 11  12    13
+20150803222713,192.168.100.4,5002,192.168.100.2,36823,3, 5.0-6.0, 24990, 199920, 0.011,0, 17, 0.000,0
+20160525171330,192.168.1.77, 5001,192.168.1.52, 57997,5,20.0-21.0,130830,1046640,1.945,0, 89, 0.000,0
+20160525183306,192.168.1.77, 5001,192.168.1.52, 54274,5,21.0-22.0,0,     0,      0.000,0, 0,  -nan, 0
+
+"""
+def is_valid_iperf_udp_line(cols, report_interval):
+	
+	# Valid length
+	if len(cols) != 14 or int(cols[13]) != 0:
+		return False
+
+	# NaN lines
+	if cols[12] == "-nan":
+		return False
+
+
+	# Is a valid report interval? 
+	intvs = cols[6].split("-")
+	intv0 = float(intvs[0])
+	intv1 = float(intvs[1])
+	if intv1 - intv0 != float(report_interval):
+		return False
+	return True
 
 def iperf_udp_thread(data, port, singles):
 	print "\niPerf UDP server listening on port {}".format(port)
@@ -565,7 +561,46 @@ def bwm_ng_thread(data, interface):
 	print "bwm-ng thread terminated"
 
 
-def execute_matplotlib(data):
+def keyboard_listener_thread(do_visualize):
+	help_string = "\nKeyboard listener started\
+	\nCommands:\
+	\n - q: Quit the program\
+	\n - s: Save a screenshot [.pdf]\
+	\n - p: Pause (resume) plotting"
+
+	print help_string
+
+	quit_key = "q"
+	save_key = "s"
+	pause_key ="p"   
+	input_key = ""
+	try:
+		while input_key != quit_key:  
+			input_key = str(raw_input("\nCommand: ")) 
+			if input_key == quit_key:
+				stop_server()
+			elif input_key == pause_key and do_visualize:
+				if pause.is_set():
+					pause.clear()
+				else:
+					pause.set()
+			elif input_key == save_key and do_visualize:
+				plt.savefig('plot-{}.pdf'.format(time.time()), format="PDF")
+			elif input_key != quit_key:
+				print "Invalid command key"
+	except (KeyboardInterrupt):
+		stop_server()
+	finally:
+		print "Keyboard listener terminated"
+
+
+def reset_lines(lines, ax):
+	lines.clear()
+
+	return lines, ax
+
+
+def execute_matplotlib(data, window_size):
 
 	x_lim_left = 0 
 	x_lim_right = 1
@@ -573,10 +608,10 @@ def execute_matplotlib(data):
 	wus = 1.1 # white upper space
 	lines = {} # lines to plot
 	ax = {} # axes or subplots
+	w_size = window_size
 	
-	fig = plt.figure(1, figsize=(9,6))
+	fig = plt.figure(1, figsize=w_size)
 	plt.ion()
-	plt.show(block=False)
 
 	subplots = {
 		"tcp-udp" : {
@@ -610,17 +645,19 @@ def execute_matplotlib(data):
 		left=0.08, 
 		bottom=0.08, 
 		top=0.94, 
-		right=0.80)
+		right=0.75)
 
 	lines["SUM"] = {}
 	lines["SUM"]["total"], = ax["tcp-udp"].plot([],[], label="SUM", color="black")
 	print_legend(ax["tcp-udp"],0)
-   
+
+	plt.show()
+
 	# ------------------------------- MAIN PLOT CICLE -----------------------------
 	while not stop.is_set():
 
 		time.sleep(IPERF_REPORT_INTERVAL)
-		
+
 		if pause.is_set():
 			continue
 
@@ -641,9 +678,15 @@ def execute_matplotlib(data):
 			x_lim_left = x_lim_right - MAX_TIME_WINDOW 
 	
 		"""
-		Update lines
+		Update the plot
 		"""
 		with sem_data:
+
+			for uid in data:
+				if uid != "SUM":
+					for prot in ["tcp", "udp", "total"]:
+						update_death_flows(data[uid][prot], now)
+
 			"""
 			Dinamically set the graph height
 			"""
@@ -672,7 +715,15 @@ def execute_matplotlib(data):
 				ax[key].set_ylim(0, max(1,max_y)*wus)  
 				ax[key].set_xlim(x_lim_left, x_lim_right)  
 
+
+			"""
+			Update lines
+			"""
 			for src in data:
+
+				"""
+				Add new lines
+				"""
 				if src!= "SUM" and src not in lines:
 					lines[src]={}
 					src_color = ""
@@ -685,13 +736,15 @@ def execute_matplotlib(data):
 						elif key == "udp":
 							lines[src][key], = ax["tcp-udp"].plot([],[], color = src_color, linestyle = "--")
 
-			
+
+				"""
+				Smoothed lines
+				"""
 				for key in data[src]:
-					first_index = max(0,first_index_geq(data[src][key]["t"],x_lim_left)-2)
+					first_index = max(0,first_index_geq(data[src][key]["t"], x_lim_left)-2)
 					last_index = max(0,len(data[src][key]["t"])-1)
 					x = list(data[src][key]["t"][first_index:last_index])
 					y = list(data[src][key]["val"][first_index:last_index])
-
 					if src!="SUM" and key=="total" and len(x)>(SMOOTH_WINDOW/DENSITY_LINSPACE)+1:
 						f = interpolate.interp1d(x,y)
 						new_x = np.linspace(min(x),max(x), (x_lim_right - x_lim_left)*DENSITY_LINSPACE )
@@ -699,52 +752,20 @@ def execute_matplotlib(data):
 						lines[src][key].set_data(new_x,new_y)
 					else:							
 						lines[src][key].set_data(x,y)
+
 		
-		print_legend(ax["tcp-udp"],update_alive_flows(data))
-		fig.canvas.draw()       
+		print_legend(ax["tcp-udp"],count_users(data))
+		fig.canvas.draw()      
 
 	plt.close()
 	print "Matplotlib terminated"
-
-
-def keyboard_listener_thread(do_visualize):
-	help_string = """\nKeyboard listener started\n
-	Commands:\n\
-	q: Quit the program\n\
-	s: Save a screenshot [.pdf]\n\
-	p: Pause plotting"""
-
-	print help_string
-
-	quit_key = "q"
-	save_key = "s"
-	pause_key ="p"   
-	input_key = ""
-	try:
-		while input_key != quit_key:  
-			input_key = str(raw_input("\nCommand: ")) 
-			if input_key == quit_key:
-				stop_server()
-			elif input_key == pause_key and do_visualize:
-				if pause.is_set():
-					pause.clear()
-				else:
-					pause.set()
-			elif input_key == save_key and do_visualize:
-				plt.savefig('plot-{}.pdf'.format(time.time()), format="PDF")
-			elif input_key != quit_key:
-				print "Invalid command key"
-	except (KeyboardInterrupt):
-		stop_server()
-	finally:
-		print "Keyboard listener terminated"
 
 
 #--------------------- MAIN PROGRAM -----------------------------
 
 
 def run_server(intf, tcp_ports, udp_ports, duration, 
-	do_visualize, do_check, expected_users, check_t):
+	do_visualize, do_check, expected_users, check_t, window_size):
 
 	pause.clear() # clear the pause plot event
 	stop.clear() # clear the stop event
@@ -788,7 +809,7 @@ def run_server(intf, tcp_ports, udp_ports, duration,
 
 	# start the plot
 	if do_visualize:
-		execute_matplotlib(data)
+		execute_matplotlib(data, window_size)
 
 	# wait until the end of the test
 	try:
@@ -836,7 +857,11 @@ parser.add_argument('-c', dest='check_t', nargs=1, default=1, type=int,
 parser.add_argument('-e', dest='expected_users', nargs=1, default=1, type=int, 
 	help='Number of expected active users at the check time')
 
+parser.add_argument('-w', dest='window_size', nargs=2, default=[11,8], type=int, 
+	help='Width and height of the window [inch]')
+
+
 args = parser.parse_args()
 
 run_server(args.intf, args.tcp_ports, args.udp_ports, args.duration, 
-	args.do_visualize, args.do_check, args.expected_users, args.check_t)
+	args.do_visualize, args.do_check, args.expected_users, args.check_t, args.window_size)
