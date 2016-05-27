@@ -34,7 +34,7 @@ T = IPERF_REPORT_INTERVAL * 0.8 # reports in [t-T,t+T] are burned
 The graph keeps expanding until MAX_TIME_WINDOW [seconds], 
 then data and graph are reset and the plot begins to slide
 """
-MAX_TIME_WINDOW = 60 
+MAX_TIME_WINDOW = 10
 
 SMOOTH_WINDOW = 10 # number of samples to be smoothed
 DENSITY_LINSPACE = 4 # resampling frequency
@@ -54,7 +54,7 @@ def print_legend(subplot, num_flows):
 	else:
 		title = "{} active users".format(num_flows)
 
-	legend = subplot.legend(
+	subplot.legend(
 		bbox_to_anchor=(1.03, 1), 
 		loc=2,
 		borderaxespad=0.,
@@ -139,22 +139,41 @@ def delete_data_around_t(data, t):
 	begin = first_index_geq(data["t"], t-T) 
 	end = first_index_geq(data["t"], t+T)
 	if end - begin > 0:
-		del(data["t"][begin:end])
-		del(data["val"][begin:end])
+		if t not in data["t"]:
+			del(data["t"][begin:end])
+			del(data["val"][begin:end])
+		else:
+			index_t = data["t"].index(t)
+			del(data["t"][begin:index_t])
+			del(data["val"][index_t+1:end])
+
 
 """
 insert t,val in the correct position of data
 data is data[uid][protocol]
 """
-def insert_sample(data,t,val):
-	index = first_index_geq(data["t"],t)
-	if index == -1:
-		data["t"].append(t)
-		data["val"].append(val)
-	else:
-		data["t"].insert(index,t)
-		data["val"].insert(index,val)
+def insert_sample(data, t, val):
+	"""
+	if it was dead, put a 0 before the new value
+	"""
+	if (len(data["val"]) > 0 and 
+		data["val"][-1] == 0 and
+		t - data["t"][-1] >= DEATH_TOLERANCE):
 
+		data["t"].append(t - IPERF_REPORT_INTERVAL)
+		data["val"].append(0)
+
+	if t not in data["t"]:
+		index = first_index_geq(data["t"],t)
+		if index == -1:
+			data["t"].append(t)
+			data["val"].append(val)
+		else:
+			data["t"].insert(index,t)
+			data["val"].insert(index,val)
+	else:
+		index = data["t"].index(t)
+		data["val"][index] += val
 
 """
 Given 2 points A,B that defines the rect y
@@ -203,7 +222,8 @@ When a user stop to send data, begin to produce NAN regularly:
 def update_death_flows(data, t):
 	if len(data["t"]) > 0:
 		last_t = data["t"][-1]
-		if abs(t - last_t) >= DEATH_TOLERANCE:
+		last_val = data["val"][-1]
+		if abs(t - last_t) >= DEATH_TOLERANCE and last_val != 0:
 			data["t"].append(last_t + IPERF_REPORT_INTERVAL)
 			data["val"].append(0)
 			return True
@@ -225,7 +245,8 @@ def declare_as_singles(data, t1, t2, singles):
 	if end<0:
 		end = len(data)
 	for i in range(begin,end):
-		singles.append(data[i])
+		if data[i] not in singles:
+			singles.append(data[i])
 
 """
 Delete old singles and order the list
@@ -279,7 +300,7 @@ def update_sum(data, t, val, uid, prot, singles):
 	other = get_other(prot)
 	
 	# delete samples around t because they are fake 
-	delete_data_around_t(data[prot],t)  
+	# delete_data_around_t(data[prot],t)  
 	
 	# insert the new sample in data
 	insert_sample(data[prot], t, val)
@@ -332,16 +353,18 @@ def new_client_data():
 """
 Return true if the TCP line is valid, false otherwise
 Example:
+0			   1            2 3            4 5  6        7       8
 20160525170508,192.168.1.77,0,192.168.1.52,0,-1,9.0-10.0,1455352,11642816
 """
-def is_valid_iperf_tcp_line(cols, report_interval):
-
-	# Valid length
-	if len(cols) != 9:
-		return False
-
+def is_tcp_sum_line(cols):
 	# Is a summation line?
 	if (cols[2], cols[4], cols[5][0]) != ("0","0", "-"):
+		return False
+	return True
+
+def is_valid_tcp_line(cols, report_interval):
+	# Valid length
+	if len(cols) != 9:
 		return False
 
 	# Is a valid report interval? 
@@ -352,6 +375,7 @@ def is_valid_iperf_tcp_line(cols, report_interval):
 	if intv1 - intv0 != float(report_interval):
 		return False
 	return True
+
 
 def iperf_tcp_thread(data, port,singles):
 	print "\niPerf TCP server listening on port {}".format(port)
@@ -380,12 +404,19 @@ def iperf_tcp_thread(data, port,singles):
 		"""
 		cols = line.split(",")
 
-		if not is_valid_iperf_tcp_line(cols,report_interval):
+		if not is_valid_tcp_line(cols,report_interval):
+			continue
+
+		if is_tcp_sum_line(cols):
 			continue
 
 		uid, val_tcp = str(cols[3]), float(cols[8])
 
-		# iperf date is formatted, get the corresponding unix timestamp
+		"""
+		The unix timestamp is used only for the first packet
+		of each connection:
+		it is associated to iperf 0.0 time
+		"""
 		stamp = time.time()-t0
 
 		with sem_data:
@@ -555,8 +586,14 @@ def bwm_ng_thread(data, interface):
 			rate = float(cols[3])*8 # conversion byte/s --> bit/s
 
 			with sem_data:
-				data["t"].append(stamp)
-				data["val"].append(rate)
+				data["SUM"]["total"]["t"].append(stamp)
+				data["SUM"]["total"]["val"].append(rate)
+
+				now = int(time.time()-t0)
+				for uid in data:
+					if uid != "SUM":
+						for prot in ["tcp", "udp", "total"]:
+							update_death_flows(data[uid][prot], now)
 
 	print "bwm-ng thread terminated"
 
@@ -592,12 +629,6 @@ def keyboard_listener_thread(do_visualize):
 		stop_server()
 	finally:
 		print "Keyboard listener terminated"
-
-
-def reset_lines(lines, ax):
-	lines.clear()
-
-	return lines, ax
 
 
 def execute_matplotlib(data, window_size):
@@ -682,35 +713,25 @@ def execute_matplotlib(data, window_size):
 		"""
 		with sem_data:
 
-			for uid in data:
-				if uid != "SUM":
-					for prot in ["tcp", "udp", "total"]:
-						update_death_flows(data[uid][prot], now)
-
 			"""
-			Dinamically set the graph height
+			Dinamically set the graph height and width
 			"""
 			for key in subplots:
-				if x_lim_right > MAX_TIME_WINDOW:
-					if key=="tcp-udp" and len(data["SUM"]["total"]["val"])>x_lim_left:
-						max_y = np.max(data["SUM"]["total"]["val"][x_lim_left:])
-					else:
-						max_y = 1
-						for uid in data:
-							if uid!="SUM" and len(data[uid]["total"]["val"])>x_lim_left:
-								new_max = np.max(data[uid]["total"]["val"][x_lim_left:])
-								if new_max>max_y:
-									max_y = new_max
+				if key=="tcp-udp" and len(data["SUM"]["total"]["val"]) > 0:
+					"""
+					Use bwm-ng data
+					"""
+					index = first_index_geq(data["SUM"]["total"]["t"], x_lim_left)
+					max_y = np.max(data["SUM"]["total"]["val"][index:])
 				else:
-					if key=="tcp-udp" and len(data["SUM"]["total"]["val"])>0:
-						max_y = np.max(data["SUM"]["total"]["val"])
-					else:
-						max_y = 1
-						for uid in data:
-							if uid!="SUM" and len(data[uid]["total"]["val"])>0:
-								new_max = np.max(data[uid]["total"]["val"])
-								if new_max>max_y:
-									max_y = new_max
+					"""
+					Search the max y value in sums
+					"""
+					max_y = 1
+					for uid in data:
+						if uid!="SUM" and len(data[uid]["total"]["val"]) > 0:  
+							index = first_index_geq(data[uid]["total"]["t"], x_lim_left)
+							max_y = max(max_y, np.max(data[uid]["total"]["val"][index:]))
 
 				ax[key].set_ylim(0, max(1,max_y)*wus)  
 				ax[key].set_xlim(x_lim_left, x_lim_right)  
@@ -722,9 +743,23 @@ def execute_matplotlib(data, window_size):
 			for src in data:
 
 				"""
+				Remove inactive lines
+				"""
+				if src != "SUM":
+					if data[src]["total"]["t"][-1] < x_lim_left and src in lines:
+						if lines[src]["tcp"] in ax["tcp-udp"].lines:
+							ax["tcp-udp"].lines.remove(lines[src]["tcp"])
+						if lines[src]["udp"] in ax["tcp-udp"].lines:
+							ax["tcp-udp"].lines.remove(lines[src]["udp"])
+						if lines[src]["total"] in ax["total"].lines:
+							ax["total"].lines.remove(lines[src]["total"])
+						del(lines[src])
+
+
+				"""
 				Add new lines
 				"""
-				if src!= "SUM" and src not in lines:
+				if src!= "SUM" and src not in lines and data[src]["total"]["t"][-1] >= x_lim_left:
 					lines[src]={}
 					src_color = ""
 					for key in sorted(data[src]):
@@ -738,24 +773,24 @@ def execute_matplotlib(data, window_size):
 
 
 				"""
-				Smoothed lines
+				Smooth lines
 				"""
 				for key in data[src]:
-					first_index = max(0,first_index_geq(data[src][key]["t"], x_lim_left)-2)
-					last_index = max(0,len(data[src][key]["t"])-1)
-					x = list(data[src][key]["t"][first_index:last_index])
-					y = list(data[src][key]["val"][first_index:last_index])
-					if src!="SUM" and key=="total" and len(x)>(SMOOTH_WINDOW/DENSITY_LINSPACE)+1:
-						f = interpolate.interp1d(x,y)
-						new_x = np.linspace(min(x),max(x), (x_lim_right - x_lim_left)*DENSITY_LINSPACE )
-						new_y = smooth(f(new_x), SMOOTH_WINDOW)
-						lines[src][key].set_data(new_x,new_y)
-					else:							
-						lines[src][key].set_data(x,y)
-
+					if data[src]["total"]["t"][-1] >= x_lim_left:
+						first_index = max(0,first_index_geq(data[src][key]["t"], x_lim_left)-2)
+						last_index = max(0,len(data[src][key]["t"])-1)
+						x = list(data[src][key]["t"][first_index:last_index])
+						y = list(data[src][key]["val"][first_index:last_index])
+						if src!="SUM" and key=="total" and len(x)>(SMOOTH_WINDOW/DENSITY_LINSPACE)+1:
+							f = interpolate.interp1d(x,y)
+							new_x = np.linspace(min(x),max(x), (x_lim_right - x_lim_left)*DENSITY_LINSPACE )
+							new_y = smooth(f(new_x), SMOOTH_WINDOW)
+							lines[src][key].set_data(new_x,new_y)
+						else:							
+							lines[src][key].set_data(x,y)
 		
 		print_legend(ax["tcp-udp"],count_users(data))
-		fig.canvas.draw()      
+		fig.canvas.draw()  
 
 	plt.close()
 	print "Matplotlib terminated"
@@ -779,7 +814,7 @@ def run_server(intf, tcp_ports, udp_ports, duration,
 
 	threads["bwm-ng"] = threading.Thread(
 		target=bwm_ng_thread, 
-		args=(data["SUM"]["total"],intf))
+		args=(data,intf))
 
 	for tcp_port in tcp_ports:
 		threads["iperf_tcp_"+str(tcp_port)] = threading.Thread(
@@ -824,7 +859,6 @@ def run_server(intf, tcp_ports, udp_ports, duration,
 		stop_timer.cancel()
 		killall("iperf")
 		killall("bwm-ng")
-		print data
 		return data
 	
 
