@@ -803,7 +803,6 @@ def run_server(intf, tcp_ports, udp_ports, duration,
 		stop_timer.cancel()
 		killall("iperf")
 		killall("bwm-ng")
-		print data
 		return data
 	
 
