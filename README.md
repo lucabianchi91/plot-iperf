@@ -16,6 +16,9 @@ sudo apt-get install python-matplotlib python-pexpect python-scipy
 
 #Roadmap
 - [x] Initial commit
-- [ ] Fix plot_server (udp/tcp sum, dead declarations)
+- [x] Fix plot_server (udp/tcp sum, dead declarations)
 - [ ] Fix plot_client
 - [ ] Write the manual
+
+Issues
+- Try not to require "sudo"
