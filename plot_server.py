@@ -20,6 +20,7 @@ Since it aggregate flows, an iperf client must create at least
 sem_data = threading.Semaphore(1) # semaphore for operations on data
 stop = threading.Event() # event to stop every thread
 pause = threading.Event() # event to pause the visualizations
+screenshot = threading.Event()
 global t0   # unix timestamp of the reference instant
 
 # -------------------- CONSTANTS -----------------------
@@ -622,8 +623,9 @@ def keyboard_listener_thread(do_visualize):
 				else:
 					pause.set()
 			elif input_key == save_key and do_visualize:
-				plt.savefig('plot-{}.pdf'.format(time.time()), format="PDF")
-			elif input_key != quit_key:
+				screenshot.set()
+
+			else:
 				print "Invalid command key"
 	except (KeyboardInterrupt):
 		stop_server()
@@ -688,6 +690,10 @@ def execute_matplotlib(data, window_size):
 	while not stop.is_set():
 
 		time.sleep(IPERF_REPORT_INTERVAL)
+
+		if screenshot.is_set():
+			plt.savefig('plot-{}.pdf'.format(time.time()), format="PDF")
+			screenshot.clear()
 
 		if pause.is_set():
 			continue
@@ -806,6 +812,7 @@ def run_server(intf, tcp_ports, udp_ports, duration,
 
 	pause.clear() # clear the pause plot event
 	stop.clear() # clear the stop event
+	screenshot.clear()
 	data = set_data() # initialize the data structure
 	singles = {} # timestamps of sums executed without an element for each uid
 	threads = {} # dict of threads	
@@ -867,7 +874,7 @@ def run_server(intf, tcp_ports, udp_ports, duration,
 
 parser = argparse.ArgumentParser(description='Plot incoming iPerf rates')
 
-parser.add_argument('-i', dest='intf', nargs=1, default='wlp8s0',
+parser.add_argument('-i', dest='intf', nargs='?', default='wlp8s0',
 	help='The network interface name receiving data')
 
 parser.add_argument('-t', dest='tcp_ports', nargs='+', default=[5001], type=int, 
@@ -876,7 +883,7 @@ parser.add_argument('-t', dest='tcp_ports', nargs='+', default=[5001], type=int,
 parser.add_argument('-u', dest='udp_ports', nargs='+', default=[5201], type=int, 
 	help='List of listening UDP ports')
 
-parser.add_argument('-d', dest='duration', nargs=1, default=-1, type=int, 
+parser.add_argument('-d', dest='duration', nargs='?', default=-1, type=int, 
 	help='Duration of the test [seconds]. Default infinite')
 
 parser.add_argument('--no-plot', dest='do_visualize', action='store_false',
@@ -887,10 +894,10 @@ parser.add_argument('--do-check', dest='do_check', action='store_true',
 	help='Check the number of active users at a given instant')
 parser.set_defaults(do_check=False)
 
-parser.add_argument('-c', dest='check_t', nargs=1, default=1, type=int, 
+parser.add_argument('-c', dest='check_t', nargs='?', default=1, type=int, 
 	help='Instant to check the number of active users')
 
-parser.add_argument('-e', dest='expected_users', nargs=1, default=1, type=int, 
+parser.add_argument('-e', dest='expected_users', nargs='?', default=1, type=int, 
 	help='Number of expected active users at the check time')
 
 parser.add_argument('-w', dest='window_size', nargs=2, default=[11,8], type=int, 

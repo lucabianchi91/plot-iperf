@@ -11,6 +11,7 @@ UPDATE_INTERVAL = 1
 sem_data 		= threading.Semaphore(1) 	# semaphore for operations on data
 stop 			= threading.Event() 		# set if the program is running
 pause			= threading.Event()			# set if the graph is in pause
+screenshot 		= threading.Event() 		# set if a screenshot is required
 global t0 	# unix timestamp of the reference instant
 
 """
@@ -190,14 +191,16 @@ def tcp_probe_thread(data):
 				data["t_max"] = stamp
 			#update_cwnd_sum(data,stamp)
 
+
+
+"""
+data is data[key]["samples"]
+if the last sample is too far, 
+we create a null sample just after the last sample.
+The last sample is considered the dead point
+Apply this only to summation line
+"""
 def update_death_flows(data, stamp, cwnd_min):
-	"""
-	data is data[key]["samples"]
-	if the last sample is too far, 
-	we create a null sample just after the last sample.
-	The last sample is considered the dead point
-	Apply this only to summation line
-	"""
 	for src in data:
 		if len(data[src]["t"]) <= 0:
 			continue
@@ -345,8 +348,8 @@ def keyboard_listener_thread(server_ip, tcp_server_port, udp_server_port):
 				my_log("Kill all connections",t0)
 
 			elif cmd == save:
-				plt.savefig("plot-"+str(time.time())+".pdf", format="PDF")
-
+				screenshot.set()
+				
 			elif cmd == p:
 				if pause.is_set():
 					pause.clear()
@@ -363,6 +366,7 @@ def keyboard_listener_thread(server_ip, tcp_server_port, udp_server_port):
 
 
 		
+
 
 def execute_matplotlib(data, w_size):
 	
@@ -404,6 +408,10 @@ def execute_matplotlib(data, w_size):
 	while not stop.is_set():
 
 		time.sleep(IPERF_REPORT_INTERVAL)
+
+		if screenshot.is_set():
+			plt.savefig('plot-{}.pdf'.format(time.time()), format="PDF")
+			screenshot.clear()
 
 		if pause.is_set():
 			continue
@@ -465,7 +473,7 @@ def execute_matplotlib(data, w_size):
 						data[key]["samples"][src]["val"]
 						)
 
-			fig.canvas.draw()
+		fig.canvas.draw()
 
 	plt.close()
 	print "Matplotlib terminated"
@@ -552,6 +560,7 @@ def stop_server():
 def run_program(intf, server_ip, tcp_port, udp_port, window_size):
 	pause.clear() # clear the pause plot event
 	stop.clear() # clear the stop event
+	screenshot.clear()
 	data = set_data(intf, server_ip) # initialize the data structure
 	insert_tcp_probe_module(tcp_port)
 	global t0 # use a single global initial time stamp
@@ -566,20 +575,19 @@ def run_program(intf, server_ip, tcp_port, udp_port, window_size):
 		"keyboard"  : threading.Thread(target=keyboard_listener_thread, args=(server_ip, tcp_port, udp_port))	
 	}
 
-	for t in threads:
-		threads[t].start()
-	
-	execute_matplotlib(data, window_size)
-
-	# wait until the end of the test
 	try:
-		while not stop.is_set():
-			time.sleep(2)
+		for t in threads:
+			threads[t].start()
+
+		# main thread
+		execute_matplotlib(data, window_size)
+
 	except (KeyboardInterrupt):
 		print "Server interrupted by the user..."
 		stop_server()
 	finally:
 		print "Server terminated!"
+
 		programs = ["ping", "cat", "iperf", "bwm-ng"]
 		for prog in programs:
 			killall(prog)
@@ -591,16 +599,16 @@ def run_program(intf, server_ip, tcp_port, udp_port, window_size):
 
 parser = argparse.ArgumentParser(description='Plot outgoing iPerf connections')
 
-parser.add_argument('-i', dest='intf', nargs=1, default='wlp8s0',
+parser.add_argument('-i', dest='intf', nargs='?', default='wlp8s0',
 	help='The network interface name transmitting data')
 
-parser.add_argument('-c', dest='server_ip', nargs=1, default="192.168.1.12", 
+parser.add_argument('-c', dest='server_ip', nargs='?', default="192.168.1.12", 
 	help='Server IP address')
 
-parser.add_argument('-t', dest='tcp_port', nargs=1, default=5001, type=int, 
+parser.add_argument('-t', dest='tcp_port', nargs='?', default=5001, type=int, 
 	help='TCP server port')
 
-parser.add_argument('-u', dest='udp_port', nargs=1, default=5201, type=int, 
+parser.add_argument('-u', dest='udp_port', nargs='?', default=5201, type=int, 
 	help='UDP server port')
 
 parser.add_argument('-w', dest='window_size', nargs=2, default=[11,8], type=int, 
