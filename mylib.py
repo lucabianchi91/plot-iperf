@@ -20,6 +20,9 @@ def get_other(prot):
 	return "tcp"
 	
 
+def my_log(msg, t0=0):
+	print "\n{}: {}".format(time.time() - t0, msg)
+
 """
 Conversion es. "45.5m"--> 45500000
 Conversion es. "45m"  --> 45000000	

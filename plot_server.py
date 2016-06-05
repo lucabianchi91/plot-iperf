@@ -776,6 +776,8 @@ def execute_matplotlib(data, window_size):
 				Smooth lines
 				"""
 				for key in data[src]:
+					if len(data[src]["total"]["t"]) <= 0:
+						continue
 					if data[src]["total"]["t"][-1] >= x_lim_left:
 						first_index = max(0,first_index_geq(data[src][key]["t"], x_lim_left)-2)
 						last_index = max(0,len(data[src][key]["t"])-1)
