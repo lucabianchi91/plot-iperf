@@ -34,7 +34,7 @@ T = IPERF_REPORT_INTERVAL * 0.8 # reports in [t-T,t+T] are burned
 The graph keeps expanding until MAX_TIME_WINDOW [seconds], 
 then data and graph are reset and the plot begins to slide
 """
-MAX_TIME_WINDOW = 60
+MAX_TIME_WINDOW = 10
 
 SMOOTH_WINDOW = 10 # number of samples to be smoothed
 DENSITY_LINSPACE = 4 # resampling frequency

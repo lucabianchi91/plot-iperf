@@ -6,8 +6,7 @@ import numpy as np
 from matplotlib.font_manager import FontProperties
 from mylib import *
 
-update_interval = 1					
-FNULL			= open(os.devnull, "w") 	# where to send iperf output
+UPDATE_INTERVAL = 1					
 sem_data 		= threading.Semaphore(1) 	# semaphore for operations on data
 stop 			= threading.Event() 		# set if the program is running
 pause			= threading.Event()			# set if the graph is in pause
@@ -370,7 +369,7 @@ def matplotlib_thread(data):
 	"""
 	while not stop.is_set():
 
-		time.sleep(update_interval)
+		time.sleep(UPDATE_INTERVAL)
 		if pause.is_set():
 			continue
 
@@ -455,7 +454,7 @@ def new_data(network_interface, server_ip):
 			"starting_max" : 1,
 			"max" 		: 1,
 			"t_max"		: 1,
-			"command"	: "bwm-ng -u bits -T rate -t {} -I {} -d 0 -c 0 -o csv".format(update_interval*1000, network_interface),
+			"command"	: "bwm-ng -u bits -T rate -t {} -I {} -d 0 -c 0 -o csv".format(UPDATE_INTERVAL*1000, network_interface),
 			"samples" 	: {"t":[], "val":[]}
 			
 		},
@@ -477,7 +476,7 @@ def new_data(network_interface, server_ip):
 			"starting_max" : 0.0005,
 			"max" 		: 0.0005,
 			"t_max"		: 1,
-			"command"	: "ping -i {} -D {}".format(update_interval, server_ip),
+			"command"	: "ping -i {} -D {}".format(UPDATE_INTERVAL, server_ip),
 			"samples" 	: { "t":[], "val":[]}			
 		}
 	}
