@@ -245,16 +245,16 @@ def keyboard_listener_thread(server_ip, tcp_server_port, udp_server_port):
 
 	help_string = "\nKeyboard listener started\
 	\nCommands:\
-	\n i : info\
-	\n s : save screenshot\
-	\n p : pause plotting\
-	\n +#t : create # TCP flows\
-	\n -#t : kill # TCP flows\
-	\n +#u : create 1 UDP flows with rate # Mbps\
-	\n kt  : kill all TCP flows\
-	\n ku  : kill UDP flow\
-	\n ka  : kill all flows\
-	\n q   : quit the program"
+	\n - i   : Show info about TCP and UDP flows\
+	\n - s   : Save a screenshot [.pdf]\
+	\n - p   : Pause (resume) plotting\
+	\n - q   : Quit the program\
+	\n - +Nt : Create N TCP flows\
+	\n - -Nt : Kill N TCP flows\
+	\n - +Ru : Create a UDP flow transmitting at R Mbps\
+	\n - kt  : Kill all TCP flows\
+	\n - ku  : Kill all UDP flows\
+	\n - ka  : Kill all flows"
 
 	print help_string
 
